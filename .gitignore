@@ -4,6 +4,9 @@
 *.pem
 *.key
 
+chroma_store/
+runs/
+
 # deps
 node_modules/
 .pnpm-store/
@@ -30,4 +33,5 @@ Thumbs.db
 data/index/
 data/embeddings/
 *.sqlite
-*.db
+*.db*
+eval/

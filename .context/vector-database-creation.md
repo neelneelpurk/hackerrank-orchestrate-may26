@@ -457,8 +457,27 @@ embedding_function: None  ← embeddings are always provided externally from Jin
 
 `query(company, query_embedding, top_k, where)`:
 - `company=None` → query all 3 collections and merge results
-- `where` dict for optional metadata pre-filter (e.g. `{"doc_type": "faq"}`)
+- `where` dict for optional metadata pre-filter
 - Returns list of `{text, metadata, distance}` dicts sorted by distance
+
+**Doc-type pre-filter (used by the triage pipeline at query time):**
+
+The triage `Planner` (see HLD §7.2) emits a `doc_type_filter` per retrieve step based on detected intent. The `retrieve_tool` translates that into a Chroma `where` clause:
+
+```python
+# intent="how_to"   → doc_type_filter=["how-to", "faq"]
+# intent="factual"  → doc_type_filter=["reference", "faq", "conceptual"]
+# intent="complaint"→ doc_type_filter=["troubleshooting", "faq"]
+
+where = (
+    {"doc_type": {"$in": doc_type_filter}}
+    if doc_type_filter
+    else None
+)
+hits = chroma_store.query(company, embedding, top_k=8, where=where)
+```
+
+If the filter returns < 3 hits (rare for the larger HackerRank/Claude collections, possible for thin Visa subdomains), fall back to an unfiltered query on the same collection. This fallback is logged so calibration can detect when the filter is too aggressive.
 
 `clear_company(company)`:
 - Delete + recreate collection (for idempotent full re-index)
@@ -510,6 +529,14 @@ For each company in [hackerrank, claude, visa]:
 ```
 
 **Batching rationale:** Embed all chunks for one company in a single pass (batches of 100 to Jina) rather than file-by-file. Minimises API round-trips and avoids rate limiting.
+
+### 11.1 FAQ question-variant augmentation (embedding-time only)
+
+For FAQ-style chunks (rule: chunk text contains a question stem at the head — see `_extract_question` in [code/indexer.py](../code/indexer.py)), the indexer appends a `Related phrasings: <question> | <keyword form>` line to the **embedding text** before sending it to Jina. The keyword form is the question stripped of stems ("how do I", "can I", …) and stopwords.
+
+This lifts recall on short, terse retrieval queries: a ticket asking "cancel test" hits a chunk whose canonical question is "How Can I Cancel a Test Invite?" because the embedding now also encodes "cancel test invite" as a related phrasing.
+
+The variant-augmented text is stored in Chroma's text field (used to compute the embedding); the **canonical** chunk text in SQLite is untouched. At retrieve time, `tools.retrieve` calls `_refresh_from_sqlite` to replace each hit's text with the SQLite version, so the Solver only ever sees the clean canonical chunk — never the `Related phrasings:` line.
 
 ---
 
